@@ -1,43 +1,26 @@
 # FluvPay SDK para Go
 
-SDK oficial da FluvPay para Go. Cobranças PIX, saques, transferências internas e
-verificação de webhooks, com tipagem forte e zero dependência externa (usa apenas
-a biblioteca padrão: `net/http` e `encoding/json`).
+SDK oficial da FluvPay para Go. Cobre cobranças PIX, saques, transferências internas, o extrato de transações e a verificação de assinatura de webhooks. A tipagem é forte e não há dependências externas: o SDK usa apenas a biblioteca padrão (`net/http` e `encoding/json`). A interface é estável e previsível, adequada tanto a integrações construídas por desenvolvedores quanto a agentes de IA que consomem esta documentação para integrar.
+
+Requisitos: Go 1.21 ou superior.
 
 ## Instalação
 
-Diferente de outras linguagens, Go não usa um registry central de pacotes. O
-`go get` resolve o módulo direto do GitHub, então o comando abaixo já funciona
-hoje, sem nenhum cadastro intermediário:
+Go resolve módulos diretamente do GitHub. Não há registry central de pacotes, portanto não é necessário nenhum cadastro intermediário.
 
 ```bash
-go get github.com/fluvpay/fluvpay-go@latest
+go get github.com/fluvpay/fluvpay-go@v1.0.0
 ```
 
-O `@latest` pega o commit mais recente do branch principal. Depois é só importar
-o pacote no seu código:
+Importe o pacote no código:
 
 ```go
 import "github.com/fluvpay/fluvpay-go"
 ```
 
-O caminho do módulo é `github.com/fluvpay/fluvpay-go` (igual ao declarado no
-`go.mod`), por isso o import e o `go get` usam exatamente essa string.
+O caminho do módulo é `github.com/fluvpay/fluvpay-go`, idêntico ao declarado no `go.mod`. O import e o `go get` usam exatamente essa string. Fixar uma tag de release (como `@v1.0.0`) é recomendado em produção.
 
-Quando a versão estável `v1.0.0` for tagueada no GitHub, você poderá fixar um
-release específico (recomendado para produção):
-
-```bash
-# disponível quando a tag v1.0.0 for publicada no GitHub
-go get github.com/fluvpay/fluvpay-go@v1.0.0
-```
-
-Requisitos: Go 1.21 ou superior.
-
-## Configuração
-
-A API Key define o modo de operação pelo prefixo: `fluv_live_` para produção e
-`fluv_test_` para o sandbox. Você só precisa passar a chave; o SDK cuida do resto.
+## Início rápido
 
 ```go
 package main
@@ -82,15 +65,50 @@ func main() {
 }
 ```
 
-## Criar uma cobrança PIX
+`fluvpay.New` exige uma `APIKey` e causa pânico se ela estiver vazia. O `Client` resultante é seguro para uso concorrente e centraliza autenticação, serialização, idempotência, mapeamento de erros e retentativas.
 
-A criação de cobrança aceita apenas os campos do contrato. Não envie `currency`
-nem `method`: a moeda e o método (PIX) são implícitos, e a API rejeita campos
-extras com erro de validação.
+## Autenticação
 
-A `Idempotency-Key` é gerada automaticamente (UUIDv4) se você não informar uma.
-Para controlar a chave (por exemplo, reusar entre tentativas do seu lado), passe
-pelo terceiro argumento:
+A autenticação usa a API Key no header `Authorization`, enviada como `Bearer <api_key>`. O ambiente é determinado pelo prefixo da chave: `fluv_live_` opera em produção e `fluv_test_` opera no sandbox. O método `client.IsTestKey()` retorna `true` quando a chave em uso é de sandbox.
+
+A configuração do cliente é definida via `fluvpay.Config`.
+
+| Campo | Tipo | Padrão | Descrição |
+| --- | --- | --- | --- |
+| `APIKey` | `string` | obrigatório | Chave de API. Prefixo `fluv_live_` (produção) ou `fluv_test_` (sandbox). |
+| `BaseURL` | `string` | `https://api.fluvpay.com/api/v1` | URL base da API. |
+| `HTTPClient` | `*http.Client` | cliente com timeout de 30s | Cliente HTTP customizado (timeouts, proxy, transporte de teste). |
+| `MaxRetries` | `int` | `2` | Número máximo de retentativas. Um valor negativo desliga as retentativas. |
+
+## Cobranças PIX
+
+O recurso `Charges` cria, recupera e lista cobranças PIX.
+
+### Criar
+
+A criação aceita apenas os campos do contrato. Os campos `currency` e `method` não devem ser enviados: a moeda e o método (PIX) são implícitos, e a API rejeita campos extras com erro de validação.
+
+| Campo | Tipo | Obrigatório | Descrição |
+| --- | --- | --- | --- |
+| `AmountCents` | `int` | sim | Valor em centavos, entre 100 e 100000. |
+| `Description` | `*string` | não | Descrição livre de até 500 caracteres. |
+| `Customer` | `*ChargeCustomer` | não | Dados do pagador (`Name`, `Email`, `Document`, `Phone`), todos opcionais. |
+| `ExpiresInSeconds` | `*int` | não | Tempo de expiração entre 60 e 604800. Usa o padrão do processador se omitido. |
+| `AffiliateCode` | `*string` | não | Código de afiliado, de 4 a 24 caracteres. |
+| `SplitRuleID` | `*string` | não | Referência a uma regra de split do merchant, de 20 a 32 caracteres. |
+| `PassFeeToPayer` | `*bool` | não | Repassa a taxa ao pagador (soma no QR/PIX). Padrão do servidor quando `nil`. |
+| `Metadata` | `map[string]any` | não | Objeto livre de metadados. |
+
+Os campos opcionais são ponteiros. Os helpers `fluvpay.String`, `fluvpay.Int` e `fluvpay.Bool` constroem esses ponteiros de forma concisa.
+
+```go
+charge, err := client.Charges.Create(ctx, fluvpay.ChargeCreateParams{
+	AmountCents: 2500,
+	Description: fluvpay.String("Pedido #1042"),
+}, nil)
+```
+
+A `Idempotency-Key` é gerada automaticamente como UUIDv4 quando o terceiro argumento é `nil` ou não traz uma chave. Para controlar o valor, informe-o em `RequestOptions`:
 
 ```go
 charge, err := client.Charges.Create(ctx,
@@ -99,10 +117,7 @@ charge, err := client.Charges.Create(ctx,
 )
 ```
 
-Os campos opcionais são ponteiros. Use os helpers `fluvpay.String`,
-`fluvpay.Int` e `fluvpay.Bool` para preenchê-los de forma enxuta.
-
-## Recuperar e listar
+### Recuperar e listar
 
 ```go
 charge, err := client.Charges.Retrieve(ctx, "chg_...")
@@ -118,9 +133,11 @@ fmt.Println(page.Data)    // []ChargeListItem
 fmt.Println(page.HasNext) // paginação por page/per_page
 ```
 
+A listagem de cobranças usa paginação por `page`/`per_page`. O envelope `ChargeList` expõe `Data`, `Page`, `PerPage`, `Total`, `HasNext` e `HasPrev`. O campo `Status` aceita `pending`, `paid`, `expired`, `cancelled` e `refunded`.
+
 ## Saques e transferências internas
 
-Estas operações são live-only: chaves `fluv_test_` recebem 403.
+As operações de saque e transferência interna são exclusivas de produção. Chaves `fluv_test_` recebem 403.
 
 ```go
 withdrawal, err := client.Withdrawals.Create(ctx, fluvpay.WithdrawalCreateParams{
@@ -138,7 +155,11 @@ transfer, err := client.InternalTransfers.Create(ctx, fluvpay.InternalTransferCr
 }, nil)
 ```
 
-## Extrato (transactions)
+A listagem de saques usa paginação por `limit`/`offset`. A transferência interna identifica o destinatário por `RecipientEmail` ou `RecipientMerchantID`.
+
+## Extrato de transações
+
+O recurso `Transactions` lista e recupera lançamentos do extrato. A listagem usa paginação por `page`/`per_page`.
 
 ```go
 txPage, err := client.Transactions.List(ctx, fluvpay.TransactionListParams{Page: 1, PerPage: 50})
@@ -147,19 +168,18 @@ tx, err := client.Transactions.Retrieve(ctx, "tx_...")
 
 ## Sandbox
 
-Disponível apenas com chave `fluv_test_`.
+O recurso `Sandbox` está disponível apenas com chave `fluv_test_`.
 
 ```go
 scenarios, err := client.Sandbox.Scenarios(ctx)
 reset, err := client.Sandbox.Reset(ctx)
 ```
 
-## Verificação de webhooks
+## Webhooks
 
-A FluvPay assina cada entrega. Verifique a assinatura usando o corpo CRU da
-requisição (nunca re-serialize o JSON, pois isso muda os bytes e invalida a
-assinatura). O cálculo é `HMAC_SHA256(secret, timestamp + "." + rawBody)` em hex,
-e o header `X-FluvPay-Signature` vem no formato `v1=<hex>`.
+A FluvPay assina cada entrega de webhook. A verificação usa o corpo cru da requisição. O JSON não deve ser re-serializado, pois isso altera os bytes e invalida a assinatura.
+
+A assinatura é calculada como `HMAC_SHA256(secret, timestamp + "." + rawBody)` em hexadecimal. O header `X-FluvPay-Signature` chega no formato `v1=<hex>` e o timestamp chega em `X-FluvPay-Timestamp`. O parâmetro `ToleranceSeconds` define a janela máxima de tolerância entre o timestamp e o instante da verificação.
 
 ```go
 package main
@@ -202,15 +222,13 @@ func handler(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-Eventos disponíveis: `charge.created`, `charge.paid`, `charge.expired`,
-`charge.cancelled`, `charge.refunded`, `payout.created`, `payout.completed` e
-`payout.failed`.
+Uma assinatura inválida ou um timestamp fora da tolerância retorna `SignatureVerificationError`.
 
-## Tratamento de erros
+Eventos emitidos: `charge.created`, `charge.paid`, `charge.expired`, `charge.cancelled`, `charge.refunded`, `payout.created`, `payout.completed` e `payout.failed`.
 
-Cada falha vira um erro tipado. Todos carregam `Code()`, `Details()`,
-`TraceID()` e `StatusCode()` (interface `fluvpay.Error`). Use `errors.As` para
-destrinchar o tipo concreto.
+## Erros
+
+Toda falha é retornada como um erro tipado que implementa a interface `fluvpay.Error`, com os métodos `Code()`, `Details()`, `TraceID()` e `StatusCode()`. Use `errors.As` para acessar o tipo concreto.
 
 ```go
 import (
@@ -231,19 +249,33 @@ case errors.As(err, &rerr):
 }
 ```
 
-Mapeamento: 400/422 para `ValidationError`, 401 para `AuthenticationError`, 403
-para `PermissionError`, 404 para `NotFoundError`, 409 para `ConflictError` (inclui
-`IDEMPOTENCY_CONFLICT`), 429 para `RateLimitError` (lê `Retry-After`), 5xx para
-`ServerError`, e falha de rede ou timeout para `ConnectionError`. A verificação de
-webhook usa `SignatureVerificationError`.
+O mapeamento de status HTTP para tipo de erro é o seguinte.
+
+| Status HTTP | Tipo | Observação |
+| --- | --- | --- |
+| 400, 422 | `ValidationError` | Dados inválidos ou estado impeditivo (inclui `INSUFFICIENT_BALANCE`). |
+| 401 | `AuthenticationError` | Autenticação obrigatória ou chave inválida. |
+| 403 | `PermissionError` | Escopo insuficiente ou operação não permitida (inclui operações não suportadas em sandbox). |
+| 404 | `NotFoundError` | Recurso não encontrado. |
+| 409 | `ConflictError` | Conflito, inclui `IDEMPOTENCY_CONFLICT`. |
+| 429 | `RateLimitError` | Limite de requisições excedido. `RetryAfter` é lido do header `Retry-After`. |
+| 5xx | `ServerError` | Erro interno do servidor. |
+| sem resposta | `ConnectionError` | Falha de rede, timeout ou interrupção antes da resposta HTTP. |
+
+A verificação de webhook retorna `SignatureVerificationError`.
 
 ## Retentativas
 
-O SDK retenta automaticamente (padrão 2 tentativas, backoff exponencial com
-jitter) apenas em situações seguras: requisições GET e POSTs que carregam
-`Idempotency-Key`, nos casos de 429 e 5xx ou falha de conexão. O header
-`Retry-After` é respeitado. Para desligar, passe um `MaxRetries` negativo (ex:
-`MaxRetries: -1`) na `Config`.
+O SDK retenta automaticamente apenas operações seguras: requisições GET e POSTs que carregam `Idempotency-Key`. A retentativa ocorre em respostas 429, respostas 5xx e falhas de conexão. O padrão é de 2 tentativas adicionais, com backoff exponencial e jitter. O header `Retry-After` é respeitado quando presente.
+
+Para desligar as retentativas, defina um `MaxRetries` negativo na `Config`:
+
+```go
+client := fluvpay.New(fluvpay.Config{
+	APIKey:     os.Getenv("FLUVPAY_API_KEY"),
+	MaxRetries: -1,
+})
+```
 
 ## Desenvolvimento
 
@@ -252,8 +284,7 @@ go build ./...
 go test ./...
 ```
 
-O smoke no sandbox roda somente se a variável `FLUVPAY_TEST_KEY` (prefixo
-`fluv_test_`) estiver presente; caso contrário, é ignorado.
+O smoke test contra o sandbox roda somente quando a variável `FLUVPAY_TEST_KEY` (prefixo `fluv_test_`) está presente. Sem ela, o teste é ignorado.
 
 ## Licença
 
