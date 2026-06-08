@@ -1,0 +1,47 @@
+name: CI SDK Go
+
+on:
+  push:
+    paths:
+      - "sdks/go/**"
+  pull_request:
+    paths:
+      - "sdks/go/**"
+
+defaults:
+  run:
+    working-directory: sdks/go
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go-version: ["1.21", "1.22", "1.23"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurar Go ${{ matrix.go-version }}
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Conferir formatação (gofmt)
+        run: |
+          fmtout=$(gofmt -l .)
+          if [ -n "$fmtout" ]; then
+            echo "Arquivos fora do padrão gofmt:"
+            echo "$fmtout"
+            exit 1
+          fi
+
+      - name: Analisar com go vet
+        run: go vet ./...
+
+      - name: Compilar
+        run: go build ./...
+
+      - name: Rodar testes unit e de webhook
+        run: go test ./...
+        env:
+          FLUVPAY_TEST_KEY: ${{ secrets.FLUVPAY_TEST_KEY }}
